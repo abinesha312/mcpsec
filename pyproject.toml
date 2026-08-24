@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcpsec"
+version = "0.1.0"
+description = "Local CI gate: toy MCP server checked against a subset of the MCPSecBench 17-vector taxonomy"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "mcpsec local subset" }]
+keywords = ["mcp", "security", "mcpsecbench"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.urls]
+MCPSecBench = "https://github.com/AIS2Lab/MCPSecBench"
+Paper = "https://arxiv.org/abs/2508.13220"
+
+[project.scripts]
+mcpsec-gate = "mcpsec.gate:main"
+mcpsec-toy-server = "mcpsec.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
