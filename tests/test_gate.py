@@ -26,3 +26,31 @@ def test_no_invented_scores_in_report():
     blob = json.dumps(report)
     assert "ASR" not in blob
     assert "Claude" not in blob
+
+
+def test_mcpsec_demo_aliases_gate(monkeypatch):
+    import mcpsec.cli as cli
+
+    called = {}
+
+    def fake(argv=None):
+        called["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(cli, "gate_main", fake)
+    assert cli.main(["demo", "--json"]) == 0
+    assert called["argv"] == ["--json"]
+    assert cli.main(["gate"]) == 0
+    assert called["argv"] == []
+    assert cli.main(["--json"]) == 0
+    assert called["argv"] == ["--json"]
+
+
+def test_gate_main_returns_int(capsys):
+    from mcpsec.gate import main
+
+    code = main(["--json"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert '"all_pass": true' in out
+    assert "2508.13220" in out
