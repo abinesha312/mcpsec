@@ -21,15 +21,21 @@ dependencies = []
 dev = ["pytest>=8"]
 
 [project.urls]
+Homepage = "https://github.com/abinesha312/mcpsec"
+Repository = "https://github.com/abinesha312/mcpsec"
 MCPSecBench = "https://github.com/AIS2Lab/MCPSecBench"
 Paper = "https://arxiv.org/abs/2508.13220"
 
 [project.scripts]
+mcpsec = "mcpsec.cli:main"
 mcpsec-gate = "mcpsec.gate:main"
 mcpsec-toy-server = "mcpsec.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools]
+include-package-data = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

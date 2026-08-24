@@ -46,13 +46,26 @@ Covered locally: **T09, T10, T14, T16, T17**.
 - extra arguments (T09)
 - hash change after enroll (T17)
 
-## Install and run
+## Install from GitHub
 
 ```bash
-cd /workspace/pocs/mcpsec
+pip install "git+https://github.com/abinesha312/mcpsec.git"
+```
+
+One-command demo (local subset of MCPSecBench IDs T09, T10, T14, T16, T17; Yang, Wu, Chen, arXiv:2508.13220):
+
+```bash
+mcpsec demo
+```
+
+That is an alias of `mcpsec-gate` (`mcpsec-gate --json` still works).
+
+From a clone:
+
+```bash
 python3 -m pip install -e ".[dev]"
 pytest
-mcpsec-gate
+mcpsec demo
 mcpsec-gate --json
 ```
 

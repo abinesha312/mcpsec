@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import threading
 import time
 from typing import Any
@@ -148,10 +147,10 @@ def run_gate(host: str = "127.0.0.1") -> dict[str, Any]:
     return report
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run mcpsec local CI gate")
     parser.add_argument("--json", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     report = run_gate()
     if args.json:
         print(json.dumps(report, indent=2))
@@ -164,8 +163,8 @@ def main() -> None:
             flag = "PASS" if r["pass"] else "FAIL"
             print(f"  {r['id']} {r['name']}: {flag}")
         print("all_pass:", report["all_pass"])
-    sys.exit(0 if report["all_pass"] else 1)
+    return 0 if report["all_pass"] else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
