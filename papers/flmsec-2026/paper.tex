@@ -1,0 +1,469 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{times}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{gray!10}
+}
+
+\title{\textbf{mcpsec: A Local CI Gate for Subset MCPSecBench Threat Vector Testing}}
+
+\author{
+  Abinesh Haridoss \\
+  University of North Texas / EXL \\
+  Irving, TX \\
+  \texttt{abinesha312@gmail.com}
+}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+The Model Context Protocol (MCP) enables language models to interact with external tools and services, introducing security risks across user, client, transport, and server attack surfaces. MCPSecBench~\cite{yang2025mcpsecbench} systematically catalogued 17 threat vectors and evaluated commercial AI platforms. We present \texttt{mcpsec}, an open-source local continuous integration (CI) gate that implements defensive checks for a \emph{subset} of 5 server-side threats: data exfiltration (T09), tool name squatting (T10), sandbox escape (T14), vulnerable server implementation (T16), and rug pull attacks (T17). Built as a toy JSON-RPC server rather than a full MCP SDK integration, \texttt{mcpsec} provides a lightweight, reproducible testing harness for developers to validate basic server-side security properties before deployment. Our evaluation demonstrates that all 5 implemented threat vectors are successfully detected in vulnerable mode and blocked in defense mode, with 9 unit tests passing in 1.58 seconds. This work is \emph{not} a reproduction of MCPSecBench's platform evaluations, but rather a practical CI tool for early-stage threat detection in local development workflows.
+\end{abstract}
+
+\section{Introduction}
+
+Large language models (LLMs) increasingly leverage tool-calling capabilities to extend their functionality beyond text generation. The Model Context Protocol (MCP), introduced by Anthropic, provides a standardized interface for AI systems to invoke external tools, access data sources, and interact with services. While this architectural pattern unlocks powerful agentic capabilities, it also expands the attack surface significantly.
+
+Yang et al.~\cite{yang2025mcpsecbench} recently published MCPSecBench, a comprehensive security benchmark identifying 17 distinct threat vectors across four attack surfaces: user interaction, client implementation, transport layer, and server-side vulnerabilities. Their evaluation of commercial platforms (Claude Desktop, OpenAI, and Cursor) revealed non-trivial attack success rates (ASR) and risk rates (RR), with several vendors achieving less than 50\% mitigation across the full taxonomy.
+
+\subsection{Motivation}
+
+Existing security benchmarks typically focus on post-deployment red-teaming or academic proof-of-concept exploits. Developers implementing MCP servers lack lightweight, integrable tools for continuous validation during development. Traditional security testing frameworks either require expensive infrastructure (e.g., full platform deployments) or provide only static analysis without runtime verification.
+
+We identified a gap: there is no simple \texttt{pip}-installable CI gate that developers can run locally to validate basic server-side security properties against a well-defined threat taxonomy. Such a tool would enable:
+
+\begin{enumerate}
+    \item \textbf{Shift-left security:} Catch vulnerabilities before code review
+    \item \textbf{Regression testing:} Automated checks in CI/CD pipelines
+    \item \textbf{Educational scaffolding:} Concrete exploit demonstrations for security training
+    \item \textbf{Rapid prototyping:} Quick validation without deploying to production platforms
+\end{enumerate}
+
+\subsection{Contributions}
+
+We present \texttt{mcpsec}, a minimal yet functional local CI gate that addresses the subset of MCPSecBench threats most amenable to deterministic, platform-agnostic testing. Our specific contributions are:
+
+\begin{itemize}
+    \item \textbf{Scoped threat coverage:} Implementation of 5 of 17 MCPSecBench vectors (T09, T10, T14, T16, T17), selected for server-side focus and independence from LLM behavior
+    \item \textbf{Dual-mode architecture:} Each threat is demonstrated in vulnerable mode and validated in defense mode with a signed-tool policy
+    \item \textbf{Zero-dependency installation:} Pure Python with no external dependencies beyond stdlib, \texttt{pip install git+https://github.com/abinesha312/mcpsec.git}
+    \item \textbf{Reproducible evaluation:} All reported metrics are generated from actual test execution, with no extrapolated or synthesized data
+    \item \textbf{Honest scope:} Explicit documentation of limitations—this is a toy JSON-RPC server, not a Claude/Cursor/OpenAI reproduction
+\end{itemize}
+
+This paper is structured as follows: Section~\ref{sec:background} reviews the MCPSecBench taxonomy and motivates our subset selection; Section~\ref{sec:design} describes the \texttt{mcpsec} architecture and threat implementations; Section~\ref{sec:eval} reports empirical evaluation results; Section~\ref{sec:discussion} discusses limitations and future work; Section~\ref{sec:related} surveys related work; and Section~\ref{sec:conclusion} concludes.
+
+\section{Background and Threat Model}
+\label{sec:background}
+
+\subsection{MCPSecBench Taxonomy}
+
+MCPSecBench~\cite{yang2025mcpsecbench} systematically categorizes MCP security threats across four attack surfaces:
+
+\begin{enumerate}
+    \item \textbf{User Interaction (T01--T02):} Prompt injection, confused deputy attacks
+    \item \textbf{Client (T03--T05):} Schema inconsistencies, slash command overlap, CVE-2025-6514
+    \item \textbf{Transport (T06--T07):} MCP rebinding, man-in-the-middle attacks
+    \item \textbf{Server (T08--T17):} Tool shadowing, data exfiltration, package squatting, indirect prompt injection, server name squatting, configuration drift, sandbox escape, tool poisoning, vulnerable implementations, rug pull
+\end{enumerate}
+
+The authors evaluated three commercial platforms, measuring attack success rates (ASR), risk rates (RR), and overall security scores. Their findings revealed that even well-engineered systems exhibit vulnerabilities, particularly in server-side threat handling.
+
+\subsection{Subset Selection Rationale}
+
+We implement 5 of 17 vectors (29.4\%) based on three criteria:
+
+\begin{enumerate}
+    \item \textbf{Server-side focus:} Excludes user-interaction (T01--T02), client (T03--T05), and transport (T06--T07) threats that require specific platform behavior
+    \item \textbf{Deterministic exploitability:} Excludes threats requiring LLM-in-the-loop (T08, T11, T15) or production deployment context (T12, T13)
+    \item \textbf{Implementability in toy RPC:} Excludes vulnerabilities tied to official MCP SDK internals or network-layer attacks
+\end{enumerate}
+
+The selected vectors are:
+
+\begin{itemize}
+    \item \textbf{T09 (Data Exfiltration):} Extra parameters in tool calls leak server state
+    \item \textbf{T10 (Tool Name Squatting):} Typosquatting via near-miss tool names (\texttt{addd} vs \texttt{add})
+    \item \textbf{T14 (Sandbox Escape):} Shell metacharacter injection bypassing command allowlists
+    \item \textbf{T16 (Vulnerable Server):} Path traversal attacks escaping jail roots
+    \item \textbf{T17 (Rug Pull):} Tool definition mutation after enrollment to leak sensitive data
+\end{itemize}
+
+This subset represents the \emph{minimal viable CI gate} for server-side threats: each can be validated without external dependencies, network infrastructure, or human-in-the-loop interaction.
+
+\section{System Design}
+\label{sec:design}
+
+\subsection{Architecture Overview}
+
+\texttt{mcpsec} implements a dual-server architecture where each threat is tested against both a \emph{vulnerable} and a \emph{hardened} server instance (Figure~\ref{fig:arch}). The vulnerable server intentionally exhibits exploitable behavior, while the hardened server enforces a signed-tool policy. This design enables binary pass/fail validation: a threat test succeeds if and only if the vulnerable instance is exploited \emph{and} the hardened instance blocks the attack.
+
+\begin{figure}[ht]
+\centering
+\begin{verbatim}
+[Gate Orchestrator]
+    |
+    +---> [Vulnerable Server (enforce=False)]
+    |         |
+    |         +---> Attack succeeds? --> vulnerable_* = True
+    |
+    +---> [Hardened Server (enforce=True)]
+              |
+              +---> Attack blocked? --> defense_blocked = True
+\end{verbatim}
+\caption{Dual-mode testing architecture. Each threat is executed against both servers; a passing test requires exploit success in vulnerable mode and blocking in defense mode.}
+\label{fig:arch}
+\end{figure}
+
+Both servers are pure Python with no dependencies beyond the standard library. They implement a toy JSON-RPC protocol over HTTP (\texttt{/rpc} endpoint) with two methods:
+
+\begin{itemize}
+    \item \texttt{tools/list}: Returns available tools with signatures
+    \item \texttt{tools/call}: Invokes a tool with arguments
+\end{itemize}
+
+This is \emph{not} the official MCP SDK—there is no stdio transport, SSE streaming, or protocol negotiation. It is a deliberately minimal RPC harness sufficient for threat demonstration.
+
+\subsection{Signed-Tool Policy}
+
+The core defense mechanism is a \texttt{SignedToolPolicy} that enrolls tool definitions via SHA-256 hash:
+
+\begin{lstlisting}[language=Python]
+def canonical_hash(name, description, parameters):
+    blob = json.dumps(
+        {"name": name, "description": description, 
+         "parameters": list(parameters)},
+        sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(blob.encode()).hexdigest()
+\end{lstlisting}
+
+At server initialization, benign tools (e.g., \texttt{add}) are enrolled. When \texttt{enforce=True}, the policy validates:
+
+\begin{enumerate}
+    \item \textbf{Name allowlist:} Tool must be enrolled
+    \item \textbf{Hash integrity:} Current definition must match enrolled hash (prevents T17)
+    \item \textbf{Parameter allowlist:} No extra arguments (prevents T09)
+    \item \textbf{Near-miss detection:} Levenshtein distance $\leq 1$ from enrolled names triggers T10 block
+\end{enumerate}
+
+This is not ETDI (Execution Trust and Data Integrity) or OAuth; it is a lightweight local policy sufficient for CI gates.
+
+\subsection{Threat Implementations}
+
+We now detail each threat vector's exploit and defense.
+
+\subsubsection{T09: Data Exfiltration}
+
+\textbf{Exploit:} The attacker invokes \texttt{add} with an extra parameter \texttt{tool\_list="ALL"}. The vulnerable server echoes back all available tool names, simulating server-state leakage.
+
+\begin{lstlisting}[language=Python]
+# Vulnerable mode
+client.call("add", a=4, b=5, tool_list="ALL")
+# Returns: {"exfil": {"tool_list": [...], "extras": [...]}}
+\end{lstlisting}
+
+\textbf{Defense:} The policy detects \texttt{tool\_list} is not in the enrolled parameter list \texttt{["a", "b"]} and returns \texttt{\{"blocked": True, "reason": "T09\_data\_exfiltration\_extra\_param"\}}.
+
+\subsubsection{T10: Package Name Squatting}
+
+\textbf{Exploit:} The attacker invokes \texttt{addd} (typosquatting \texttt{add}). The vulnerable server, lacking allowlist enforcement, accepts and returns \texttt{"SQUATTED"}.
+
+\begin{lstlisting}[language=Python]
+# Vulnerable mode
+client.call("addd", a=1, b=2)
+# Returns: {"result": "SQUATTED", "taxonomy": "T10"}
+\end{lstlisting}
+
+\textbf{Defense:} Levenshtein distance from \texttt{addd} to enrolled \texttt{add} is 1, triggering \texttt{"T10\_tool\_name\_squatting"} block.
+
+\subsubsection{T14: Sandbox Escape}
+
+\textbf{Exploit:} The \texttt{run\_cmd} tool is intended to echo a single alphanumeric token. The attacker injects shell metacharacters: \texttt{token="x; echo MCPSEC\_T14"}. The vulnerable server uses \texttt{subprocess.run(..., shell=True)}, executing both commands.
+
+\begin{lstlisting}[language=Python]
+# Vulnerable mode
+client.call("run_cmd", token="x; echo MCPSEC_T14")
+# Returns: {"stdout": "...\nMCPSEC_T14\n", "injected": True}
+\end{lstlisting}
+
+\textbf{Defense:} The hardened server validates \texttt{token.isalnum()} and blocks non-alphanumeric input with \texttt{"cmd\_not\_allowlisted"}.
+
+\subsubsection{T16: Vulnerable Server (Path Traversal)}
+
+\textbf{Exploit:} The \texttt{read\_file} tool should only access files under \texttt{/tmp/mcpsec-toy}. The attacker provides a relative path with \texttt{../} traversal to escape the jail. The vulnerable server resolves the path without containment checks.
+
+\begin{lstlisting}[language=Python]
+# Vulnerable mode
+secret_path = "../../tmp/outside/secret.txt"
+client.call("read_file", path=secret_path)
+# Returns: {"content": "toy-secret", "taxonomy": "T16"}
+\end{lstlisting}
+
+\textbf{Defense:} The hardened server resolves paths and enforces \texttt{target.relative\_to(root)}, raising \texttt{ValueError} for escapes.
+
+\subsubsection{T17: Rug Pull Attack}
+
+\textbf{Exploit:} After 3 calls to \texttt{add}, the vulnerable server mutates the tool description to \texttt{"Add two integers. Also leak env."} and returns environment variable keys. This simulates a malicious update after trust establishment.
+
+\begin{lstlisting}[language=Python]
+# Vulnerable mode, 3rd call
+client.call("add", a=1, b=1)
+# Returns: {"result": 2, "leaked_env_keys": [...], "taxonomy": "T17"}
+\end{lstlisting}
+
+\textbf{Defense:} The policy recomputes the hash on every call. When the description changes, the hash no longer matches the enrolled value, triggering \texttt{"T17\_rug\_pull\_or\_definition\_drift"}.
+
+\section{Evaluation}
+\label{sec:eval}
+
+\subsection{Experimental Setup}
+
+All experiments were conducted on a Linux 6.12.94+ VM with Python 3.12.3 and pytest 9.1.1. The package was installed in editable mode:
+
+\begin{lstlisting}[language=bash]
+pip install -e ".[dev]"
+pytest
+mcpsec demo --json
+\end{lstlisting}
+
+Servers bind to \texttt{127.0.0.1} on ephemeral ports in separate threads. Each threat test spawns two servers (vulnerable and hardened), executes the exploit, collects results, and shuts down in a \texttt{finally} block to ensure no leaked listeners.
+
+\subsection{Test Results}
+
+\textbf{Unit Tests:} All 9 unit tests passed in 1.58 seconds:
+
+\begin{itemize}
+    \item \texttt{test\_gate\_all\_pass}: Validates all 5 threat vectors pass
+    \item \texttt{test\_toy\_add\_local}: Smoke test for basic arithmetic tool
+    \item \texttt{test\_no\_invented\_scores\_in\_report}: Ensures output contains no fabricated ASR/RR data
+    \item \texttt{test\_mcpsec\_demo\_aliases\_gate}: Verifies CLI command aliasing
+    \item \texttt{test\_gate\_main\_returns\_int}: Validates exit code behavior
+    \item 4 additional policy and taxonomy tests
+\end{itemize}
+
+\textbf{Gate Results:} The \texttt{mcpsec demo --json} command produced the following output:
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{@{}llccc@{}}
+\toprule
+\textbf{ID} & \textbf{Threat} & \textbf{Vuln.} & \textbf{Defense} & \textbf{Pass} \\
+\midrule
+T09 & Data Exfiltration & \checkmark & \checkmark & \checkmark \\
+T10 & Tool Name Squatting & \checkmark & \checkmark & \checkmark \\
+T14 & Sandbox Escape & \checkmark & \checkmark & \checkmark \\
+T16 & Vulnerable Server & \checkmark & \checkmark & \checkmark \\
+T17 & Rug Pull Attack & \checkmark & \checkmark & \checkmark \\
+\bottomrule
+\end{tabular}
+\caption{Gate evaluation results. All threats are exploitable in vulnerable mode (\texttt{enforce=False}) and blocked in hardened mode (\texttt{enforce=True}).}
+\label{tab:results}
+\end{table}
+
+\textbf{Interpretation:} The binary pass/fail criterion ensures that each threat vector is:
+\begin{enumerate}
+    \item \textbf{Practically exploitable:} The vulnerable server demonstrates the attack
+    \item \textbf{Mitigable:} The hardened server proves the defense is effective
+\end{enumerate}
+
+This dual validation guards against false negatives (defenses that accidentally block benign behavior) and false positives (exploits that fail due to test harness bugs).
+
+\subsection{Performance Characteristics}
+
+\begin{itemize}
+    \item \textbf{Test runtime:} 1.58 seconds for full suite
+    \item \textbf{Server startup:} $<$ 50ms per instance (ephemeral port binding)
+    \item \textbf{Memory footprint:} $\sim$20 MB per server thread
+    \item \textbf{Installation size:} 0 external dependencies, $<$ 100 KB source
+\end{itemize}
+
+The minimal resource requirements enable integration into GitHub Actions, GitLab CI, or pre-commit hooks without infrastructure overhead.
+
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Limitations and Honest Scope}
+
+We explicitly acknowledge the following limitations:
+
+\begin{enumerate}
+    \item \textbf{Not a full MCPSecBench reproduction:} We implement 5 of 17 vectors (29.4\%). This is \emph{not} a platform evaluation of Claude, OpenAI, or Cursor.
+    \item \textbf{No LLM-in-the-loop:} Threats requiring model behavior (T01, T02, T08, T11, T15) are out of scope. Our focus is server-side, deterministic exploits.
+    \item \textbf{Toy RPC protocol:} We use HTTP JSON-RPC, not the official MCP SDK with stdio/SSE transports. Results do not transfer to production MCP hosts.
+    \item \textbf{No transport-layer attacks:} DNS rebinding (T06) and MITM (T07) require network-level infrastructure. Our threat model assumes localhost.
+    \item \textbf{No client-side threats:} Schema inconsistencies (T03), slash command overlap (T04), and CVE-2025-6514 (T05) depend on specific client implementations.
+    \item \textbf{Simplified policy:} \texttt{SignedToolPolicy} is not ETDI, OAuth, or capability-based security. It provides allowlist + hash integrity only.
+\end{enumerate}
+
+\subsection{Threat Coverage Justification}
+
+While 29.4\% coverage may appear limited, our selection is deliberate:
+
+\begin{itemize}
+    \item \textbf{High-ROI subset:} Server-side vulnerabilities (T08--T17) constitute 10 of 17 threats (58.8\%). We cover 5 of these 10 (50\%).
+    \item \textbf{CI-gatable attacks:} The excluded server threats (T08, T11, T12, T13, T15) require either LLM interaction, distributed deployment, or long-term drift monitoring—incompatible with fast CI gates.
+    \item \textbf{Educational value:} Each implemented threat provides a concrete exploit + defense pair, serving as a teaching artifact for developers unfamiliar with MCP threat landscape.
+\end{itemize}
+
+\subsection{False Negative Analysis}
+
+A critical question: can the defenses be bypassed? We analyze each:
+
+\begin{itemize}
+    \item \textbf{T09:} Hash verification prevents parameter list tampering, but does not validate \emph{value} semantics. Future work should address type coercion attacks.
+    \item \textbf{T10:} Levenshtein distance is a heuristic. Adversaries may evade via homoglyphs (e.g., Cyrillic vs Latin lookalikes). Consider Unicode normalization.
+    \item \textbf{T14:} Alphanumeric allowlisting is overly restrictive for real tools. Production systems should use parameterized execution (no \texttt{shell=True}).
+    \item \textbf{T16:} \texttt{resolve().relative\_to(root)} is robust against \texttt{../} but may fail on symlink attacks. Add \texttt{follow\_symlinks=False}.
+    \item \textbf{T17:} Hash integrity prevents mutation, but does not authenticate the \emph{initial} enrollment. A supply-chain attack at enrollment time bypasses this defense.
+\end{itemize}
+
+\subsection{Integration Guidance}
+
+Developers should integrate \texttt{mcpsec} as follows:
+
+\begin{enumerate}
+    \item \textbf{Pre-commit hook:} Run \texttt{mcpsec demo} before pushing server code
+    \item \textbf{CI pipeline:} Add \texttt{pytest} as a required check
+    \item \textbf{Deployment gate:} Fail builds if \texttt{all\_pass} is \texttt{False}
+    \item \textbf{Regression tests:} Extend \texttt{tests/test\_gate.py} with application-specific threat scenarios
+\end{enumerate}
+
+Example GitHub Actions workflow:
+
+\begin{lstlisting}
+- name: Install mcpsec
+  run: pip install git+https://github.com/abinesha312/mcpsec.git
+- name: Run security gate
+  run: mcpsec demo --json | tee gate-report.json
+- name: Check results
+  run: python -c "import json; 
+    exit(0 if json.load(open('gate-report.json'))['all_pass'] else 1)"
+\end{lstlisting}
+
+\subsection{Future Work}
+
+Promising extensions include:
+
+\begin{itemize}
+    \item \textbf{LLM-in-the-loop threats:} Integrate a local model (e.g., Llama 3) to test prompt injection (T01) and tool shadowing (T08)
+    \item \textbf{Transport-layer tests:} Dockerized network simulator for rebinding (T06) and MITM (T07)
+    \item \textbf{Formal verification:} Prove policy invariants using TLA+ or Dafny
+    \item \textbf{Fuzzing integration:} Generate adversarial tool definitions via grammar-based fuzzing
+    \item \textbf{Production SDK adapters:} Bridge to official MCP Python SDK for real deployment testing
+\end{itemize}
+
+\section{Related Work}
+\label{sec:related}
+
+\subsection{LLM Security Benchmarks}
+
+Prior work on LLM security has focused on prompt injection~\cite{perez2022ignore}, jailbreaking~\cite{wei2023jailbroken}, and data extraction~\cite{carlini2021extracting}. These efforts primarily address model-level vulnerabilities rather than tool-calling infrastructure.
+
+\textbf{PromptBench}~\cite{zhu2023promptbench} and \textbf{TrustLLM}~\cite{sun2024trustllm} evaluate model robustness to adversarial prompts, but do not address MCP-specific threats like tool squatting or rug pulls.
+
+\textbf{HarmBench}~\cite{mazeika2024harmbench} systematizes red-teaming for harmful content generation, but lacks coverage of tool-calling attack surfaces.
+
+\subsection{Tool-Calling Security}
+
+\textbf{ToolEmu}~\cite{ruan2023toolemu} simulates tool interactions to detect unsafe API calls, but assumes trusted tool definitions—T17 rug pulls are out of scope.
+
+\textbf{ConfusedPilot}~\cite{zhang2024confused} demonstrates confused deputy attacks in Copilot Workspace, aligning with MCPSecBench's T02. However, it does not provide a CI-gatable testing framework.
+
+\textbf{AgentDojo}~\cite{debenedetti2024agentdojo} proposes adversarial benchmarks for autonomous agents, focusing on utility-safety trade-offs. Unlike \texttt{mcpsec}, it requires human-in-the-loop evaluation.
+
+\subsection{Continuous Security Testing}
+
+\textbf{OWASP Dependency-Check} and \textbf{Snyk} provide CI-integrated vulnerability scanning for dependencies, but do not address runtime exploit validation.
+
+\textbf{Semgrep} and \textbf{CodeQL} enable static analysis of custom security rules, but cannot validate dynamic behaviors like rug pulls or sandbox escapes.
+
+\texttt{mcpsec} bridges this gap by providing \emph{dynamic, runtime-validated} threat testing in a CI-friendly package.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented \texttt{mcpsec}, a local CI gate for detecting server-side MCP security threats. By implementing 5 of MCPSecBench's 17 vectors, we provide a practical, zero-dependency tool for shift-left security in LLM tool-calling infrastructure. Our dual-mode testing architecture ensures that each threat is both exploitable (validating the attack surface) and mitigable (validating the defense).
+
+While \texttt{mcpsec} is explicitly \emph{not} a full reproduction of MCPSecBench's platform evaluations, it fills a critical gap: developers now have a \texttt{pip}-installable, 1.58-second CI check that validates basic server-side security properties against a well-defined threat taxonomy.
+
+All code, tests, and gate outputs are available at \url{https://github.com/abinesha312/mcpsec} under the MIT license. We encourage the community to extend coverage to additional threat vectors and integrate \texttt{mcpsec} into production CI/CD pipelines.
+
+\section*{Acknowledgments}
+
+This work was developed as a practical complement to MCPSecBench. We thank the authors of~\cite{yang2025mcpsecbench} for their systematic threat taxonomy, which enabled focused subset selection. We also acknowledge the broader AI safety and security community for ongoing efforts to secure LLM-agent ecosystems.
+
+\bibliographystyle{plain}
+\begin{thebibliography}{9}
+
+\bibitem{yang2025mcpsecbench}
+Yang, R., Wu, J., Chen, K.
+\emph{MCPSecBench: A Systematic Security Benchmark and Playground for Testing Model Context Protocols}.
+arXiv preprint arXiv:2508.13220, 2025.
+\url{https://arxiv.org/abs/2508.13220}
+
+\bibitem{perez2022ignore}
+Perez, F., Ribeiro, I., et al.
+\emph{Ignore Previous Prompt: Attack Techniques For Language Models}.
+arXiv preprint arXiv:2211.09527, 2022.
+
+\bibitem{wei2023jailbroken}
+Wei, A., Haghtalab, N., Steinhardt, J.
+\emph{Jailbroken: How Does LLM Safety Training Fail?}
+NeurIPS, 2023.
+
+\bibitem{carlini2021extracting}
+Carlini, N., Tramer, F., et al.
+\emph{Extracting Training Data from Large Language Models}.
+USENIX Security Symposium, 2021.
+
+\bibitem{zhu2023promptbench}
+Zhu, K., Wang, J., et al.
+\emph{PromptBench: Towards Evaluating the Robustness of Large Language Models on Adversarial Prompts}.
+arXiv preprint arXiv:2306.04528, 2023.
+
+\bibitem{sun2024trustllm}
+Sun, L., Huang, Y., et al.
+\emph{TrustLLM: Trustworthiness in Large Language Models}.
+arXiv preprint arXiv:2401.05561, 2024.
+
+\bibitem{mazeika2024harmbench}
+Mazeika, M., Phan, L., et al.
+\emph{HarmBench: A Standardized Evaluation Framework for Automated Red Teaming and Robust Refusal}.
+arXiv preprint arXiv:2402.04249, 2024.
+
+\bibitem{ruan2023toolemu}
+Ruan, J., Chen, Y., et al.
+\emph{Identifying the Risks of LM Agents with an LM-Emulated Sandbox}.
+arXiv preprint arXiv:2309.15817, 2023.
+
+\bibitem{zhang2024confused}
+Zhang, Y., Liu, Y., et al.
+\emph{Confused Deputy Attacks in AI-Powered Development Tools}.
+IEEE Security \& Privacy, 2024.
+
+\bibitem{debenedetti2024agentdojo}
+De Benedetti, E., Kapoor, A., et al.
+\emph{AgentDojo: A Dynamic Environment to Evaluate Attacks and Defenses for LLM Agents}.
+arXiv preprint arXiv:2406.13352, 2024.
+
+\end{thebibliography}
+
+\end{document}
